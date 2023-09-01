@@ -1,0 +1,1352 @@
+---
+title: "TET2-IL1b_10x scRNAseq analysis"
+author: "Ruslan Strogantsev"
+date: "05/17/2022"
+output:
+  html_notebook:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    
+    toc: yes
+    fig_caption: yes
+    fig_crop: no
+    df_print: kable
+editor_options:
+  chunk_ouput_type: inline
+    
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+require("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+
+getwd()
+```
+
+# Seurat set up
+
+## Load raw data
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(sleepwalk)
+library(patchwork)
+
+theme_set(theme_bw(base_size = 10))
+
+WT.unt1 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_WT_Unt/filtered_feature_bc_matrix")
+WT.unt2 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_WT_Unt_2/filtered_feature_bc_matrix")
+WT.stm1 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_WT_IL1b/filtered_feature_bc_matrix")
+WT.stm2 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_WT_IL-1b_2/filtered_feature_bc_matrix")
+
+KO.unt1 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_TET2_Unt/filtered_feature_bc_matrix")
+KO.unt2 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_TET2_Unt_2/filtered_feature_bc_matrix")
+KO.stm1 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_TET2_IL-1b/filtered_feature_bc_matrix")
+KO.stm2 <- Read10X(data.dir = "/Users/r.strogantsev/Library/CloudStorage/OneDrive-OregonHealth&ScienceUniversity/TET2-IL1b_sequencing_data/10x datasets/CEL200214AA_TET2_IL-1b_2/filtered_feature_bc_matrix")
+
+my.data<-list(WT.unt1, WT.unt2, WT.stm1,WT.stm2, KO.unt1, KO.unt2, KO.stm1, KO.stm2)
+#names(my.data) <- c("WT.unt1", "WT.unt2", "WT.stm1","WT.stm2", "KO.unt1", "KO.unt2", "KO.stm1", "KO.stm2")
+
+```
+
+## Define Seurat objects
+
+```{r}
+
+marrow <- list()
+for (i in 1:length(my.data)){
+  CreateSeuratObject(counts=my.data[[i]]$`Gene Expression`, project="TET2_IL1b", min.cells = 3, min.features=200) -> marrow[[i]]
+}
+
+names(marrow) <- c("WT.unt1", "WT.unt2", "WT.stm1","WT.stm2", "KO.unt1", "KO.unt2", "KO.stm1", "KO.stm2")
+
+#Add in HTO counts as a separate assay object
+for (i in 1:length(my.data)){
+  marrow[[i]][["HTO"]] <- CreateAssayObject(counts = my.data[[i]]$`Antibody Capture`[ , colnames(my.data[[i]]$`Antibody Capture`) %in% colnames (marrow[[i]]@assays$RNA)])}
+  
+
+marrow<-lapply(marrow, function(x){
+  x<- NormalizeData(x, assay = "HTO", normalization.method = "CLR")
+  x<- HTODemux(x, assay = "HTO", positive.quantile = 0.99)})
+
+lapply(marrow, function(x){table(x$HTO_classification.global)})
+```
+
+# Load Seurat object from previous file if already defined
+
+```{r}
+require(readr)
+marrow.filt.integrated <- readr::read_rds("Tet2_marrow_integrated_SeuratObject_Feb2022.rds")
+
+DefaultAssay(marrow.filt.integrated)<-"integrated"
+DefaultAssay(marrow.filt.integrated)#check it's "integrated"
+
+```
+
+## Hahtag analysis
+
+### HTO plots
+
+```{r figwidth=8, figheight=12, echo=FALSE}
+HTO.plots<-list()
+lapply(marrow, function(x){HTOHeatmap(x, assay = "HTO", ncells = 5000)})->HTO.plots
+
+#pdf(file="HTO_plots.pdf", width=8, height=6)
+require(cowplot)
+plot_grid(HTO.plots[[1]], HTO.plots[[2]], HTO.plots[[3]], HTO.plots[[4]], HTO.plots[[5]], HTO.plots[[6]], HTO.plots[[7]], HTO.plots[[8]], ncol=2, nrow = 4)
+#dev.off()
+```
+
+
+```{r}
+lapply(marrow, function(x){table(x$hash.ID)})
+
+```
+
+## QC analysis
+
+```{r}
+#get mitochondrial genes
+grep("^mt-",rownames(marrow[["WT.unt1"]]@assays$RNA@counts),value = TRUE)
+```
+
+### Profile ncounts/feature and % mt DNA expression
+
+```{r}
+#Add percent mitochondrial counts metric 
+for (i in 1:length(marrow))  {
+  PercentageFeatureSet(marrow[[i]], pattern="^mt-")->marrow[[i]]$percent.mt}
+    
+#Add largest percent of reads in a single gene
+for (i in 1:length(marrow))  {
+  apply(marrow[[i]]@assays$RNA@counts,2,function(x){(100*max(x))/sum(x)}) -> marrow[[i]]$Percent.Largest.Gene
+}
+
+
+
+Names<- names(marrow)
+marrow$WT.unt2[["Percent.Largest.Gene"]]
+
+qc.metrics <-list()
+for (n in Names){
+  as_tibble(marrow[[n]][[c("nCount_RNA","nFeature_RNA","percent.mt","Percent.Largest.Gene")]], rownames="Cell.Barcode") -> qc.metrics[[n]]}
+
+
+
+qc.plots<-list()
+for (i in 1:length(marrow)){
+qc.metrics[[i]] %>%
+  arrange(percent.mt) %>%
+  ggplot(aes(nCount_RNA,nFeature_RNA,colour=percent.mt)) + 
+  geom_point() + 
+  scale_color_gradientn(colors=c("black","blue","green2","red","yellow")) +
+  ggtitle(paste(names(marrow[i]), "QC metrics")) +
+  geom_hline(yintercept = 750) +
+  geom_hline(yintercept = 5750)+
+  scale_y_continuous(limits = c(0,8000))+
+  scale_x_continuous(limits = c(0, 60000))->qc.plots[[i]]
+  }
+
+#qc.plots[[2]]
+```
+
+### QC plots pre-filtering
+
+```{r fig.width=10, fig.height=10, echo=FALSE}
+
+require(cowplot)
+plot_grid(qc.plots[[1]], qc.plots[[2]], qc.plots[[3]], qc.plots[[4]], qc.plots[[5]], qc.plots[[6]], qc.plots[[7]], qc.plots[[8]], ncol=2, nrow = 4)
+```
+
+Perform some filtering removing low QC cells
+
+```{r}
+
+lapply(marrow, function(x){subset(x, nFeature_RNA>750 & nFeature_RNA < 5750 & percent.mt < 10 & Percent.Largest.Gene < 10)})->marrow.filt
+
+post.filt.qcplots<-list()
+for (i in 1:length(marrow.filt)){
+  FeatureScatter(marrow.filt[[i]],feature1 = "nCount_RNA", feature2 = "nFeature_RNA", cols=c("slategray2", "grey", "darkorchid", "orange"), pt.size = 0.3)-> post.filt.qcplots[[i]]}
+
+
+```
+
+Let's plot the post filtered
+
+### QC plots post-filtering
+
+```{r fig.width=10, fig.height=8, echo=FALSE}
+
+require(cowplot)
+plot_grid(post.filt.qcplots[[1]], post.filt.qcplots[[2]], post.filt.qcplots[[3]], post.filt.qcplots[[4]], post.filt.qcplots[[5]], post.filt.qcplots[[6]], post.filt.qcplots[[7]], post.filt.qcplots[[8]], ncol=2, nrow = 4)
+```
+
+Now let's normalize the data and find variable features
+
+```{r}
+for (i in 1:length(marrow.filt)) {
+    marrow.filt[[i]] <- NormalizeData(marrow.filt[[i]], verbose = FALSE)
+    marrow.filt[[i]] <- FindVariableFeatures(marrow.filt[[i]], selection.method = "vst", 
+        nfeatures = 1000, verbose = FALSE)
+}
+
+
+variance.data <-list()
+for (n in Names){
+  as_tibble(HVFInfo(marrow.filt[[n]]), rownames="Gene") -> variance.data[[n]]}
+
+variance.plots <-list()
+for (i in 1:length(marrow.filt)){
+  variance.data[[i]] %>% mutate(hypervariable=Gene %in% VariableFeatures(marrow.filt[[i]])) -> variance.data[[i]]
+  variance.data[[i]] %>% ggplot(aes(log(mean),log(variance),color=hypervariable)) + geom_point(cex = 0.3) +
+  ggtitle(paste(names(variance.data[i]), "Variable Features")) +
+  scale_color_manual(values=c("black","red"))->variance.plots[[i]]}
+rm(Names)
+
+#variance.plots[[1]]
+```
+
+### Variance plots
+
+```{r fig.width=10, fig.height=8, echo=FALSE}
+
+require(cowplot)
+plot_grid(variance.plots[[1]], variance.plots[[2]], variance.plots[[3]], variance.plots[[4]], variance.plots[[5]], variance.plots[[6]], variance.plots[[7]], variance.plots[[8]], ncol=2, nrow = 4)
+```
+
+=================================================================================
+
+# Dataset Integration & UMAP
+
+Combine all the data into single Seurat object
+
+Perform integration using WT.unt1 & WT.unt2 as a common Reference and applying Reciprocal PCA Approach
+
+Step1: select features for downstream integration, and run PCA on each object in the list, which is required for running the reciprocal PCA workflow.
+
+```{r}
+
+#marrow.filt[c(1, 2)] #reference to use
+
+my.features <- SelectIntegrationFeatures(object.list = marrow.filt)
+
+marrow.filt <- lapply(marrow.filt, FUN = function(x) {
+    x <- ScaleData(x, features = my.features, verbose = FALSE)
+    x <- RunPCA(x, features = my.features, verbose = FALSE)
+})
+
+
+anchors <- FindIntegrationAnchors(object.list = marrow.filt, reference = c(1, 2), reduction = "rpca", 
+    dims = 1:30)
+marrow.filt.integrated <- IntegrateData(anchorset = anchors, dims = 1:30)
+```
+
+marrow.filt.integrated object can be imported from previous computation for subsequent re-analysis. It contains pca/umap reductions, cell cycle scoring and cell identities.
+
+```{r}
+# Run the standard workflow for visualization and clustering
+marrow.filt.integrated <- ScaleData(marrow.filt.integrated, verbose = FALSE)
+marrow.filt.integrated <- RunPCA(marrow.filt.integrated, npcs = 30, verbose = FALSE)
+
+ElbowPlot(marrow.filt.integrated, ndims = 30)
+```
+
+## Dimensionality Reduction
+
+Since tSNE uses a randomized starting position, if we want to be able to reproduce the plot we see then we'll need to know the random 'seed' which was used to create the plot. We can capture the current state of the random number generator (from the `.Random.seed` function) and report it. This will change every time we run, but at least we will report the result.
+
+In our case, because we want everyone to get the same answer I've saved the seed from when I run this first and we'll re-use that.
+
+```{r}
+# UMAP and Clustering
+#.Random.seed function 
+saved.seed <- c(
+  403,290,1371722374,-236312912,1651604116,264269626,1591917779,-564409028,989128006,-400997089,601997736,
+  -1160107675,2013983344,175381942,151517269,942677850,-1086190362,2020492978,520137983,-323463179,-202651315,
+  1650972533,-295693092,1121268909,1110096273,-1238526139,-1854213076,1559130345,1286007842,467761463,-1316365979,
+  860777268,1983493644,1654308185,414573279,1417302422,1676142716,-327293544,914705010,-1868696384,999361670,
+  1033015101,-1601679574,-70733618,117976950,1582280223,1223591350,420744743,-304515003,2068665553,-610150176,
+  -1397033428,-139139997,-705558369,-1618519811,-1270706371,-1833699793,-1721641502,677325490,-1418547484,
+  -2082217535,-433809807,-1002048197,1348907814,-1193930256,519852523,-2063603990,1570260470,1119585458,-201488375,
+  -818473383,-987235294,-669310890,-2075306617,1439573711,845189973,1143702856,-1002169704,-263196801,2133451136,
+  31125289,-1501021709,791489897,-1649460169,-107174001,2086002062,-1170897949,-1535728540,-1111411012,-439926936,
+  233655167,-1669356163,-304141797,578947630,42709831,1341975403,-1465262063,-1810409995,1744505117,-224337612,
+  1649045369,-133741415,-189646383,-1756708152,-647336664,-1376569453,1771567143,1448355149,2037162338,-164626077,
+  -1188838193,221059598,343373683,-601445207,-914263543,175041750,-1917179405,1360808289,-394382531,-1502667218,
+  -188792291,-1976620597,1488102919,499647567,-1729453117,-1709936535,1255530075,-761943988,-1064414660,-199175887,
+  -12489982,-587112700,-806446827,-327354266,676631261,-1117514166,-1321291735,-956787041,-1822778839,-627102088,
+  -360639661,-1806169815,-259954662,1103953939,2072048556,1935154761,-1605421821,495001228,2099771156,2099711154,
+  -991421350,2053786808,611320649,-493084312,-1222962622,-1701976501,1705932489,1942854039,-1775929500,1729947613,
+  1878933476,1425859736,-1971814259,1149180690,1612106235,-1156415747,742792302,-784137879,1178829114,-1138589276,
+  2003894572,693671704,-1612657223,-2127537268,-1873038736,-955145150,-1469703487,121246412,1825204235,680434331,
+  -445836369,-1701011975,902185388,374359900,-1606677627,-989663721,-2069812861,-1632207412,1438533460,513066049,
+  731778630,1943573344,1743989809,-108397743,-481565837,-1532925075,942859337,-1086052055,556912860,-995546111,
+  -1897868268,1366596576,-2138680904,939823668,947066829,-2099042818,224496381,1231965735,1822401328,-688963798,
+  -621532886,948143744,1241258172,1968179600,805998381,-616036071,1682192256,744387994,-1968741248,1678735735,
+  1368222933,1001543798,183495304,-663438445,-151158501,1385404534,829512103,689025055,-1502135941,1719639583,
+  -1667937478,-949720048,-1708556958,-27321086,-1153914012,-176524353,-1218337447,-2072949009,1942071420,1970772622,
+  -861492561,1328188142,-709902423,-1339899778,-1888877169,2006427830,585403336,-1231336267,185589574,1536656625,
+  1424007753,1856979542,-1779199187,246445373,-2021817537,-2052263714,-1672737465,-1976983722,-423539248,-470333595,
+  484793777,-489874384,-728458691,-441894336,-2041091700,1429879262,932872317,-1231471676,-158526126,1518917466,
+  -367895880,918864,1226887843,-1348038544,1894473148,1511905345,-1148645318,-1402497937,-839024555,2137896800,
+  858634222,-1226918719,983256429,-1113482903,-1837940784,-6473635,-2121241998,57357042,864941745,-2086170713,
+  552010569,1768903217,710765748,1877045177,-1431572522,698833920,-1784257853,2056459651,560119477,1501137239,
+  1507247373,1409269711,-2032955576,-830585163,217142354,-905218474,344868975,1499786066,1813679229,1293686924,
+  -2051600967,-796787141,-1861114902,-1906083650,1503587535,253509335,-996340012,913446786,893494502,-962005316,
+  -657555410,1932289350,2097483582,-1470698647,-1325065199,-1348467953,1431217235,1012523846,-192820227,-487123348,
+  1137498136,150578142,-953032581,1439579104,-490598241,1833335126,1544916627,457928048,-1679766590,2019588660,
+  -641960003,1583304791,469219560,1763867721,1545447428,1754767358,2037684971,-1002250897,1707576661,100652354,
+  -42388466,-1598799262,738648708,1063678919,-1140777842,2026306321,1363835241,-1364995201,1499696941,-1338808110,
+  2136703617,2009609272,-565923888,-1645641280,591501025,-754733400,-1284823908,1685854834,-1458103734,-928238438,
+  -628759519,1759937023,-254901075,-1852328181,-288906135,991239000,1266070765,-1105183743,-1715940042,1648930317,
+  -661403019,-67788322,-1717498626,-552237064,-553764146,-1264765619,-601861589,-51785287,1746972600,-1831620509,
+  1454486766,-1391491940,1485149490,890884755,-1557776017,-1079730589,1612238831,-1183175879,1129214841,-1092908142,
+  1421541316,292674127,1234439903,1242345584,-1037858948,-257592038,576031242,1447637902,429071230,483554340,
+  1251749906,431579791,1907165018,-1707328376,-1578707325,-935750508,-1297853723,609801791,1949970552,-486221326,
+  -639261339,414359055,-204708652,1055623140,-1731344911,1419885143,-1858986314,1023161039,660256127,94865122,60334626,
+  732902594,111072547,-916658475,-762734405,450852584,1440581300,-610415390,-435454274,-158081886,265737006,-1910779444,
+  251652501,1659059123,-45635853,-934500203,-67808104,947432837,1513183405,-989040357,1087249261,-1647729998,
+  -2119640675,-1695737847,1342438051,1538628795,1419765498,-2045993217,1471409639,84486754,-1559791172,-995931861,
+  367670309,1428327034,-1079840384,1354063084,-1115733678,148587907,284424876,1964476135,2076641895,991825554,
+  -1474431040,-1866641772,-578030968,546558530,906424975,1139662969,-1259998720,-1365608164,-572785114,985596041,
+  -854554735,-1843519928,-655969798,927295019,1960819778,975687715,32311180,-613745193,-1382792130,-1662396517,
+  1856093494,544824889,-88222037,393427488,454332219,1191685168,1882118534,1400414278,-887920972,1814451025,
+  -1577077667,759894325,-1592526245,1023085653,1477104348,352570209,-1050846479,1338800090,1219359864,1747662662,
+  1834019953,-1606174274,-1830748748,805167884,-1123591323,-1823199668,975048851,1302222175,-830257876,-926793639,
+  -864543650,-2131478148,-1874949322,-1291854834,-1813083916,-931073441,-1259114498,-1429352890,-416522510,-874287089,
+  -777274527,343826071,1988482019,-1594560077,1621738031,-1205978540,2034216700,-100543353,-1558811776,624822239,
+  1411179769,895864579,-77280729,-1827544153,-1595921472,-1439230546,1116725595,65551371,1299616104,1010877622,
+  -72588628,955031890,748737452,-611116243,718414959,-1196004848,2057195882,-769114755,296813467,-272300302,1491769419,
+  742296977,-2110804247,-203250342,1708175046,-622373646,-527519302,1141091890,1936390581,-290536333,-1641471318,
+  1392822842,-1178327371,-2056631876,1306386909,-1739747323,-642957258,325949042,966883308,683054100,1620630722,
+  124988180,645306048,1246373707,1731284176,-965342721,-360833451,907163096,164784791,-1000394286,594395007,-647320706,
+  200749749,1792330935,-702797663,1016912708,-1737676486,1126608239,122639767,-721371539,-420744434,1809161298,135868623,
+  148551601,2007517481,1560439650,1243371408,1098059983,300595809,-1258547522,-543874491,-1822817008,223232747,-2079041116,
+  -1497120483,1948115924,1256139370,64044705,-309429863,2059253091,-2085273926,2129620345,-1741469819,1806637626)
+```
+
+## Run UMAP
+
+```{r}
+marrow.filt.integrated <- RunUMAP(marrow.filt.integrated, reduction = "pca", dims = 1:25, seed.use =saved.seed)
+marrow.filt.integrated <- FindNeighbors(marrow.filt.integrated, reduction = "pca", dims = 1:25)
+marrow.filt.integrated <- FindClusters(marrow.filt.integrated, resolution = 0.5)
+Idents(marrow.filt.integrated)<-'seurat_clusters'
+```
+
+```{r}
+head(marrow.filt.integrated@meta.data)
+```
+
+##UMAP plot
+
+```{r, fig.width=16, fig.height=12}
+DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "seurat_clusters", label = TRUE, pt.size = 0.3, label.size = 7, repel="T") +theme(legend.key.size = unit(7, "mm"))
+```
+
+## Add metadata info
+
+```{r}
+#Rename hashtag IDs according to original experimental design
+Idents(marrow.filt.integrated)<-"hash.ID"
+marrow.filt.integrated <- RenameIdents(marrow.filt.integrated, `WT-Unt` = "WT_unt_rep1", `WT-Unt.1` = "WT_unt_rep2", `WT-Unt-2` = "WT_unt_rep3", `WT-Unt-2.1` = "WT_unt_rep4", `WT-IL-1b` = "WT_stm_rep1", `WT-IL-1b.1` = "WT_stm_rep2", `WT-IL-1b-2` = "WT_stm_rep3", `WT-IL-1b-2.1` = "WT_stm_rep4", `TET2-Unt` = "KO_unt_rep1", `TET2-Unt.1` = "KO_unt_rep2", `TET2-Unt-2` = "KO_unt_rep3", `TET2-Unt-2.1` = "KO_unt_rep4", `TET2-IL-1b` = "KO_stm_rep1", `TET2-IL-1b.1` = "KO_stm_rep2", `TET2-IL-1b-2` = 'KO_stm_rep3', `TET2-IL-1b-2.1`="KO_stm_rep4")
+
+marrow.filt.integrated[["replicate.ID"]]<-Idents(marrow.filt.integrated)
+
+
+
+
+levels(marrow.filt.integrated)  
+
+as_tibble(marrow.filt.integrated[[c("hash.ID","seurat_clusters")]],rownames="Cell.Barcode") -> integrated.metadata
+
+integrated.metadata %>%
+  mutate(experiment.ID = as.factor(str_sub(Cell.Barcode, start=-1))) ->integrated.metadata
+
+mutate(integrated.metadata, 
+       genotype.ID = if_else(experiment.ID %in% c(1:4), "WT", "KO")
+       )->integrated.metadata
+
+mutate(integrated.metadata, 
+       treatment = if_else(experiment.ID %in% c(1,2,5,6), "unt", "IL1b")
+       )->integrated.metadata
+
+mutate(integrated.metadata, 
+       geno_treat = case_when(
+         experiment.ID %in% c(1:2) ~ "WT_unt",
+         experiment.ID %in% c(3:4) ~ "WT_IL1b",
+         experiment.ID %in% c(5,6) ~ "KO_unt",
+         experiment.ID %in% c(7,8) ~ "KO_IL1b")
+       ) ->integrated.metadata
+
+marrow.filt.integrated <-AddMetaData(marrow.filt.integrated, metadata = integrated.metadata$genotype.ID, col.name='genotype')
+
+marrow.filt.integrated <-AddMetaData(marrow.filt.integrated, metadata = integrated.metadata$treatment, col.name='treatment')
+
+marrow.filt.integrated <-AddMetaData(marrow.filt.integrated, metadata = integrated.metadata$geno_treat, col.name='geno_treat')
+head(marrow.filt.integrated@meta.data)
+```
+
+## Visualize cells from each replicate/genotype/condition
+
+Here we highlight HTOtag for each replicate on the UMAP plot
+
+```{r, fig.width=15, fig.height=6, echo=FALSE}
+library(RColorBrewer)
+Idents(marrow.filt.integrated)<-"replicate.ID"
+#levels(Idents(marrow.filt.integrated))
+
+colours <- c(brewer.pal(12, "Paired"), brewer.pal(4, c("Set1")), colorRampPalette(c("grey", "grey99"))(2))
+#length(colours)
+
+pl1 <- DimPlot(marrow.filt.integrated, reduction = "umap", pt.size = 0.3, cols=colours ) +theme(legend.key.size = unit(4, "mm"))
+pl2 <- DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "seurat_clusters", label = TRUE, pt.size = 0.3, label.size = 4, repel=T) +NoLegend()
+require(cowplot)
+plot_grid(pl1, pl2)
+```
+
+```{r}
+ggplot_build(pl1)$data[[1]]->pl1_meta
+levels(as.factor(pl1_meta$colour))
+```
+
+```{r}
+ggplot_build(pl2)$data[[1]]->pl2_meta
+levels(as.factor(pl1_meta$colour))->DimPlotColours
+DimPlotColours
+```
+
+## Split UMAP by Genotype & Treatment
+
+```{r, fig.width=12, fig.height=12, echo=FALSE}
+pl3 <- DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "seurat_clusters", split.by="treatment", label = TRUE, pt.size = 0.4, label.size = 6, repel=T) +theme(legend.key.size = unit(7, "mm"))
+pl4 <- DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "seurat_clusters", split.by="genotype", label = TRUE, pt.size = 0.4, label.size = 6, repel=T) +theme(legend.key.size = unit(7, "mm"))
+pl3+pl4
+```
+# Cell cycle scoring
+
+we didn't check how cell cycle affects clustering - let's do it now! We will first attempt to identify cell type populations without cell cycle regression as it may be important to distinguish between quiescent stem cells and cycling ST-HSCs. However, downstream it may artificially separate certain clusters only based on their cell cycle phase. We will attempt cell cycle regression later and see how our identified cell types hold up. 
+```{r}
+#Cell cycle score
+Idents(marrow.filt.integrated)<-"seurat_clusters"
+DefaultAssay(marrow.filt.integrated) <- "RNA"
+
+#Define cell cycle gene
+cc.genes.updated.2019
+
+s.genes <- cc.genes.updated.2019$s.genes
+g2m.genes <- cc.genes.updated.2019$g2m.genes
+
+require(stringr)
+sapply(s.genes, function(x){str_to_title(x)})-> s.genes
+sapply(g2m.genes, str_to_title) -> g2m.genes
+names(s.genes)<-NULL #names are kept as capital letters
+names(g2m.genes) <- NULL
+
+s.genes
+g2m.genes
+
+marrow.filt.integrated <- CellCycleScoring(marrow.filt.integrated, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+head(marrow.filt.integrated@meta.data) #S.score and G2M.Score and Phase appear in meta.data
+```
+
+## UMAP highlighting cell cycle stage
+
+```{r, fig.width=12, fig.height=6, echo=FALSE}
+DefaultAssay(marrow.filt.integrated) <-"integrated"
+
+marrow.filt.integrated <- RunPCA(marrow.filt.integrated, features = c(s.genes, g2m.genes))
+ccplot <- DimPlot(marrow.filt.integrated, reduction = "umap", label = F, pt.size = 0.2, group.by= "Phase")
+
+cluster_plot <- DimPlot(marrow.filt.integrated, reduction = "umap", label = TRUE, pt.size = 0.2, group.by= "seurat_clusters", label.size = 4, repel=T)+NoLegend()
+
+
+plot_grid(ccplot, cluster_plot)
+```
+
+# Identifying cell populations
+
+Let's find what cell type each cell cluster corresponds to
+
+Clusters "3" & "4"; "14" & "8" separate on cell cycle phase. Let's check gene expression markers and decide whether these indeed belong to different cell types or separatation is solely driven by cell cycle differences.
+
+## Find Top Markers per cluster
+
+```{r}
+Idents(marrow.filt.integrated) <- 'seurat_clusters'
+DefaultAssay(marrow.filt.integrated) <- "RNA"
+
+#This loop just runs the FindMarkers function on all of the clusters
+lapply(
+  levels(marrow.filt.integrated[["seurat_clusters"]][[1]]),
+  function(x){FindConservedMarkers(marrow.filt.integrated,ident.1 = x, grouping.var ="geno_treat")}) -> int.cluster.markers
+
+
+
+# This simply adds the cluster number to the results of FindMarkers
+sapply(0:(length(int.cluster.markers)-1),function(x) {
+  int.cluster.markers[[x+1]]$gene <<- rownames(int.cluster.markers[[x+1]])
+  int.cluster.markers[[x+1]]$cluster <<- x
+})
+
+# Finally we collapse the list of hits down to a single table and sort it by FDR to put the most significant ones first
+as_tibble(do.call(rbind,int.cluster.markers)) -> int.cluster.markers
+
+int.cluster.markers
+int.cluster.markers %>% 
+  select(gene, cluster, minimump_p_val, max_pval, WT_unt_avg_logFC, WT_unt_p_val, WT_unt_p_val_adj, WT_IL1b_avg_logFC, WT_IL1b_p_val, WT_IL1b_p_val_adj, KO_unt_avg_logFC, KO_unt_p_val, KO_unt_p_val_adj, KO_IL1b_avg_logFC, KO_IL1b_p_val, KO_IL1b_p_val_adj) %>%
+  arrange(cluster, minimump_p_val) -> all.cluster.markers
+
+all.cluster.markers$avg_logFC <- apply(all.cluster.markers[,c(5,8, 11,14)], 1, mean)
+
+#Write output to csv file to re-load when returning to the script
+write_csv(all.cluster.markers, "cluster-gene-markers.csv")
+
+#re-load if necessary (e.g. R crashes)
+#all.cluster.markers <-read_csv(file="cluster-gene-markers.csv")
+```
+
+## Find specific markers differentiating cluster pairs
+
+```{r}
+Idents(marrow.filt.integrated) <- 'seurat_clusters'
+FindMarkers(marrow.filt.integrated,ident.1 = 2, ident.2 = 5, test.use = "roc", only.pos = TRUE) %>%
+  top_n(n=20, wt=myAUC) %>%
+  select(myAUC)
+```
+
+## Heatmap of top genes per cluster
+
+```{r,fig.width=20, fig.height=20, echo=FALSE}
+DefaultAssay(marrow.filt.integrated)<-"integrated"
+Idents(marrow.filt.integrated)<-'seurat_clusters'
+
+cluster.markers.Dimplot<-all.cluster.markers %>%
+  filter(!cluster %in% c(2, 3,8,10, 17,22))%>% #these are redundant clusters belonging to same cell type as identified above
+  group_by(cluster) %>%
+  top_n(-20, wt=max_pval)%>% #some clusters have >20 genes with p-value-0 so additional selection based on logFC is requiered
+  top_n(8, wt=avg_logFC) #we finally select top10 cluster markers with lowest p-value and highest logFC
+  
+
+
+DoHeatmap(subset(marrow.filt.integrated, downsample =1000), features = cluster.markers.Dimplot$gene, size = 10, angle=90)+labs(title="ClusterMarkers")+theme(axis.text.y =element_text(size = 15), plot.title = element_text(size = 18, hjust=0.4))+ NoLegend()
+
+```
+
+## Assign cell IDs to Seurat obj
+
+Assign cell type identity to clusters and check key lineage markers to confirm the cell identities are correct
+
+```{r}
+Idents(marrow.filt.integrated) <- 'seurat_clusters'
+
+marrow.filt.integrated <- RenameIdents(marrow.filt.integrated, `0` = "CFU-E", `1` = "EryB_CD45-", `2` = "IMP", `3` = "proNeu", `4` = "proNeu", `5` = "IMP", `6` = "HSC", `7` = "MEP", `8` = "Baso", `9` = "preGM", `10` = "Mono", `11` = "Mono", `12` = "MegP", `13`="EryB_CD45+", `14`="Baso", `15`="Neut", `16`="T-cell", `17`="Baso", `18`="Mac", `19`="pDc/B-cell", `20`="CLP", `21`="Eo", `22`="MEP")
+
+marrow.filt.integrated[["cell.ident"]] <-Idents(marrow.filt.integrated)
+marrow.filt.integrated$cell.ident<-factor(marrow.filt.integrated$cell.ident, levels=c("HSC","preGM","IMP","proNeu","Mono","Mac","Neut","Baso","MegP", "CLP","T-cell","pDc/B-cell","Eo","MEP","CFU-E","EryB_CD45-","EryB_CD45+"))
+Idents(marrow.filt.integrated) <- "cell.ident"
+DefaultAssay(marrow.filt.integrated) <- "RNA"
+
+#VlnPlot(marrow.filt.integrated,features=c("Fcgr3"), pt.size=0) +theme(axis.title.x=element_text(size=5))+NoLegend()
+```
+
+## Add cell ids to our cluster.marker table
+
+```{r}
+#as_tibble(do.call(rbind,cluster.markers)) %>% arrange(p_val_adj) -> cluster.markers
+all.cluster.markers$cellID <-'cell_id'
+ 
+all.cluster.markers<-all.cluster.markers %>%
+  mutate_at(.vars=vars(cellID), 
+            funs(case_when(
+              cluster == 0 ~ "CFU-E",
+              cluster == 1 ~ "EryB",
+              cluster == 2 ~ "IMP",
+              cluster == 3 ~ "proNeu",
+              cluster == 4 ~ "proNeu",
+              cluster == 5 ~ "IMP",
+              cluster == 6 ~ "HSC",
+              cluster == 7 ~ "MEP",
+              cluster == 8 ~ "Baso",
+              cluster == 9 ~ "preGM",
+              cluster == 10 ~ "Mono",
+              cluster == 11 ~ "Mono",
+              cluster == 12 ~ "MegP",
+              cluster == 13 ~ "EryB",
+              cluster == 14 ~ "Baso",
+              cluster == 15 ~ "Neut",
+              cluster == 16 ~ "T-cell",
+              cluster == 17 ~ "Baso",
+              cluster == 18 ~ "Mac",
+              cluster == 19 ~ "pDc/B-cell",
+              cluster == 20 ~ "CLP",
+              cluster == 21 ~ "Eo",
+              cluster == 22 ~ "MEP")
+              )
+            
+            
+            )
+
+all.cluster.markers %>% mutate(cellID=as.factor(cellID)) -> all.cluster.markers
+levels(all.cluster.markers$cellID)
+
+all.cluster.markers$cellID <-factor(all.cluster.markers$cellID, levels=c("HSC","preGM","IMP","proNeu","Mono","Mac","Neut","Baso","MegP", "CLP","T-cell","pDc/B-cell","Eo","MEP","CFU-E","EryB_CD45-","EryB_CD45+"))
+
+```
+
+## Violin Plot markers used for cell sorting
+
+Plot SLAM markers used for cell sorting of Lin-ve, LKS, CMP, GMP and MEP cells Note Ly76(Ter119) gene is "Gypa" Ighm == "Bcr"
+
+```{r, fig.width=12, fig.height=10}
+
+#SLAM markers
+SLAM.markers<- c("Ptprc","Cd4","Cd8a","Cd19","Ly6c1","Ly6g","Gypa","Bcr","Il7r","Flt3","Cd34","Slamf1","Ly6a","Fcgr2b","Cd48")
+vln.plots3 <-VlnPlot(marrow.filt.integrated,features=SLAM.markers, pt.size=0, combine = TRUE)
+
+
+
+for (i in 1:length(SLAM.markers)){
+  vln.plots3[[i]] + FontSize(x.title = 10, y.title = 10, main = 16, x.text = 8, y.text=8)->vln.plots3[[i]]
+}
+#pdf(file="SLAM_violinPlots_no_points.pdf", width=12, height=10)
+vln.plots3 +
+  plot_layout(ncol=3)
+#dev.off()
+```
+
+Plot additional known cell lineage marker genes as example to check cell type assignment
+
+```{r}
+# List of key lineage markers from John 
+feature.list2 <-c("Ctla2a","Ly6c2","Prtn3","Lyz2","Cst3","Klf4","Ctsg","Cebpa","Car1","Klf1","Aqp1","Prss34","Fcer1a","Prg2","Jchain","Vpreb3","Gata3","Il17ra","S100a8","Csf1r","Siglech","Cd3g","Klrd1","Cd79a","Vpreb1","Ebf1","Cd74","Tfrc","Hbb-bt","Kit","Flt3","Gata1","Itga2b","Mpo","Elane","Ms4a2")
+
+# my cherry picked list of key cell lineage markers 
+my.features2plot <- c("Flt3", "Kit", "Cd34", "Fcgr3", "Elane", "Mpo", "Klf4", "Meis1", "Gata2", "Cebpe", "Irf8", "Gfi1", "S100a4", "Csf1r", "Cd48", "Gata1")
+
+key.lin.markers <- union(feature.list2, my.features2plot)
+key.lin.markers
+```
+
+## Violin Plot key lineage markers
+
+```{r, fig.width=12, fig.height=24}
+vln.plots4 <-VlnPlot(marrow.filt.integrated,features=key.lin.markers, pt.size=0, combine = TRUE)
+
+
+
+for (i in 1:length(feature.list2)){
+  vln.plots4[[i]] + FontSize(x.title = 10, y.title = 10, main = 16, x.text = 8, y.text=8)->vln.plots4[[i]]
+}
+
+vln.plots4 +
+  plot_layout(ncol=3)
+```
+
+## Heatmap of top genes per cell type
+
+```{r,fig.width=20, fig.height=25, echo=FALSE}
+Idents(marrow.filt.integrated)<-"cell.ident"
+DefaultAssay(marrow.filt.integrated)<-"integrated"
+
+celltype.markers.Dimplot<-all.cluster.markers %>%
+  arrange(cellID) %>%
+  group_by(cellID) %>%
+  top_n(-20, wt=max_pval)%>%
+  top_n(8, wt=avg_logFC)
+  
+#pdf(file="HeatMap_TopSigGenes_per_cluster.pdf", width=20, height=25)
+DoHeatmap(subset(marrow.filt.integrated, downsample =1000), features = celltype.markers.Dimplot$gene, size = 15, angle=90)+labs(title="ClusterMarkers")+theme(axis.text.y =element_text(size = 20), plot.title = element_text(size = 20, hjust=0.5))+ NoLegend()
+#dev.off()
+```
+
+## Heatmap of keylineage markers
+
+```{r, fig.width=20, fig.height=15, echo=FALSE}
+
+celltype.markers.Dimplot2<-all.cluster.markers %>%
+  filter(gene %in% key.lin.markers) %>%
+  group_by(cellID) %>%
+  arrange(cellID) %>%
+  top_n(-20, wt=max_pval)%>%
+  top_n(5, wt=avg_logFC)
+
+#pdf(file="Heatmap_key_lineage_markers.pdf", width=20, height=15)
+DoHeatmap(subset(marrow.filt.integrated, downsample =1000), features = unique(celltype.markers.Dimplot2$gene), size = 15, angle=90)+labs(title="ClusterMarkers")+theme(axis.text.y =element_text(size = 20), plot.title = element_text(size = 20, hjust=0.5))+ NoLegend()
+#dev.off()
+```
+
+## UMAP Main Cell type clusters
+
+```{r,fig.width=10, fig.height=8}
+#pdf(file="UMAP_cellclusters.pdf", width=8, height=7)
+UMAP_cell_identity <- DimPlot(marrow.filt.integrated, reduction = "umap", label = TRUE, pt.size = 0.2, label.size = 3, group.by='cell.ident',repel=T, cols=c( "#F8766D","#E88526",  "#AE87FF", "#93AA00", "#D39200","#5EB300", "#00BA38", "#00BF74", "#B79F00","#00C19F", "#00BFC4",  "#00ADFA", "#619CFF", "#FF699C","#DB72FB", "#F564E3", "#FF61C3"))
+#dev.off()
+UMAP_cell_identity
+
+```
+
+```{r,fig.width=6, fig.height=5}
+svg(file="UMAP_cellclusters.svg", width=8, height=7)
+DimPlot(marrow.filt.integrated, reduction = "umap", label = F, pt.size = 0.2, label.size = 3, group.by='cell.ident',repel=T, cols=c( "#F8766D","#E88526",  "#AE87FF", "#93AA00", "#D39200","#5EB300", "#00BA38", "#00BF74", "#B79F00","#00C19F", "#00BFC4",  "#00ADFA", "#619CFF", "#FF699C","#DB72FB", "#F564E3", "#FF61C3"))+NoLegend()+FontSize(x.text = 0, y.text=0, x.title=0, y.title=0, main=0)
+dev.off()
+
+getwd()
+```
+
+## Save R-object
+
+```{r}
+
+
+saveRDS(cds, file="/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/Tet2Monocle_CCregressed.rds")
+
+
+saveRDS(marrow.filt.integrated, file="Tet2_marrow_integrated_SeuratObject_Feb2022.rds")
+saveRDS(marrow, file="Tet2_marrow_SO.rds")
+saveRDS(marrow.filt, file="Tet2_marrow-filt_SO.rds")
+saveRDS(HSC.subset, file="HSCsubset_only_SO.rds")
+saveRDS(LKS.broader.subset, file="HSC_plus_preGM_SO.rds")
+```
+
+
+
+## Regressing cell cycle effects
+
+Having defined cell population, we may now try regressing out cell cycle effects for the purpose of defining pseudotime trajectories. 
+
+```{r}
+Idents(marrow.filt.integrated) <- "Phase"
+RidgePlot(marrow.filt.integrated, features=c("Pcna", "Top2a", "Mki67", "Mcm6"),  ncol=2)
+```
+
+```{r}
+DimPlot(marrow.filt.integrated, reduction = "pca")
+```
+
+
+```{r}
+marrow.filt.integrated$CC.Difference <- marrow.filt.integrated$S.Score - marrow.filt.integrated$G2M.Score
+marrow.filt.integrated <- ScaleData(marrow.filt.integrated, vars.to.regress = c("S.Score", "G2M.Score"), features=rownames(marrow.filt.integrated))
+```
+
+```{r}
+DefaultAssay(marrow.filt.integrated)<-"integrated"
+marrow.filt.integrated <- RunPCA(marrow.filt.integrated, features = VariableFeatures(marrow.filt.integrated), nfeatures.print=10)
+Idents(marrow.filt.integrated)<-'Phase'
+DimPlot(marrow.filt.integrated, reduction = "pca")
+```
+```{r}
+ElbowPlot(marrow.filt.integrated)
+```
+
+
+
+## Run UMAP
+
+```{r}
+marrow.filt.integrated <- RunUMAP(marrow.filt.integrated, reduction = "pca", dims = 1:26)
+marrow.filt.integrated <- FindNeighbors(marrow.filt.integrated, reduction = "pca", dims = 1:26)
+marrow.filt.integrated <- FindClusters(marrow.filt.integrated, resolution = 0.5)
+Idents(marrow.filt.integrated)<-'seurat_clusters'
+```
+
+```{r}
+head(marrow.filt.integrated@meta.data)
+```
+
+##UMAP plot
+
+Replot UMAP post cell cycle regression and verify that assigned cell populations are still distinct.
+
+```{r, fig.width=16, fig.height=12}
+DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "cell.ident", label = TRUE, pt.size = 0.3, label.size = 7, repel="T") +theme(legend.key.size = unit(7, "mm"))
+```
+
+
+```{r, fig.width=20, fig.height=15}
+
+cluster_plot<-DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "seurat_clusters", label = TRUE, pt.size = 0.1, label.size = 7, repel="T") +theme(legend.key.size = unit(7, "mm"))
+
+ccplot <-DimPlot(marrow.filt.integrated, reduction = "umap", label = F, pt.size = 0.1, group.by= "Phase")
+
+cellID_plot <-DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "cell.ident", label = TRUE, pt.size = 0.1, label.size = 3, repel="T") +theme(legend.key.size = unit(7, "mm"))
+
+repID_plot<-DimPlot(marrow.filt.integrated, reduction = "umap", group.by = "replicate.ID", label = F, pt.size = 0.1, label.size = 3, repel="T") +theme(legend.key.size = unit(7, "mm"))
+require(cowplot)
+plot_grid(ccplot, cluster_plot, cellID_plot, repID_plot, ncol=2, nrow=2)
+```
+#Monocle 3 analysis
+
+Use Seurat wrappers to convert our Seurat object to Monocle3 single cell experiment
+
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+library(sleepwalk)
+library(patchwork)
+library(svglite)
+Idents(marrow.filt.integrated) <-"cell.ident"
+DefaultAssay(marrow.filt.integrated) <- "RNA"
+```
+
+
+```{r, fig.width=12, fig.height=10}
+cds <- as.cell_data_set(marrow.filt.integrated)
+cds <- cluster_cells(cds, resolution=1e-4)
+
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+p2 <- plot_cells(cds, color_cells_by = "cell.ident", show_trajectory_graph = FALSE, label_cell_groups=FALSE)
+p3 <- plot_cells(cds, color_cells_by = "Phase", show_trajectory_graph = FALSE, label_cell_groups=FALSE)
+p4 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE, label_cell_groups=FALSE)
+
+#ggsave(filename = "Seurat-Monocole-CC_UMAPs.svg", plot = wrap_plots(p1, p2, p3, p4), device = "svg", width = 6, height = 6, units = "in")
+wrap_plots(p1, p2, p3, p4)
+#cds@colData
+```
+
+## Trajectory Analysis
+```{r}
+cds <- learn_graph(cds, use_partition = TRUE, verbose = TRUE)
+```
+
+
+## Trajectory by cluster
+```{r, fig.width=10, fig.height=5}
+p5 <- plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)
+
+p6 <- plot_cells(cds,
+           color_cells_by = "cell.ident",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)
+
+
+#ggsave(filename = "Monocle_clusters_traj.svg", plot = p5, device = "svg", width = 6, height = 6, units = "in")
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/Seurat_clusters_traj.svg", plot = p6, device = "svg", width = 6, height = 6, units = "in")
+#ggsave(filename = "Seurat-Monocole_clusters_traj.svg", plot = wrap_plots(p5, p6), device = "svg", width = 6, height = 3, units = "in")
+wrap_plots(p5, p6)
+```
+
+
+## Pseudotime
+```{r, fig.width=6, fig.height=6}
+cds <- order_cells(cds, root_cells = colnames(cds[,clusters(cds) == 16]))
+ps.time.plot<-plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/Pseudotime_UMAP.svg", plot = ps.time.plot, device = "svg", width = 6, height = 6, units = "in")
+ps.time.plot
+
+
+```
+
+## Diffusion pseudotime plot function
+
+```{r}
+plot_pseudotime <- function(plot.meta, pseudotime = 'pseudo',x_lab = "Diffusion Pseudotime",y_lab="% of Total Cells",title_name = "HSC and preGM" ,clusters_of_interest = c("HSC","preGM"),color_hex = NULL,cluster_colors = NULL,b_scale = 1,binwidth = 1, alpha_var = .5,save_file = NULL, xlim = c(0, 36)){
+    #takes a data table
+    #returns a plot or saves a plot if 'save_file' is a path to a file and not null
+    #alpha_var for color opacity
+    #add pseudotime to table based on the user defined pseudotime of interest
+    #default is 'dpt_pseudotime'
+    set(plot.meta,j = 'pseudo',value = plot.meta[[pseudotime]])
+    #use all clusters if clusters of interest is null
+    if (is.null(clusters_of_interest)){
+        clusters_of_interest <- unique(plot.meta$cell.ident) #changed $clusters to $cell.ident
+    }
+    #correct colors for condition if there is no input
+    if (is.null(color_hex)){
+        color_names = unique(plot.meta$geno_treat)
+        color_hex <- brewer.pal(max(3,length(color_names)),"Dark2")
+        color_hex <- color_hex[seq(length(color_names))]
+        names(color_hex) <- color_names
+    }
+    #subset
+    myplotmeta = plot.meta[cell.ident %in% clusters_of_interest,]
+    #correct colors for clusters if no cluster colors given
+    if (is.null(cluster_colors)){
+        
+        cluster_names = unique(myplotmeta$cell.ident)
+        cluster_colors <- brewer.pal(length(unique(cluster_names)),"Set2") #[c(1,length(clusters_of_interest)[[1]])]
+        #print(cluster_names)
+        #print(cluster_colors)
+        names(cluster_colors) <- cluster_names
+    }
+    color_tsv_file <- read.delim('cluster_colors.tsv',check.names=F)
+    cluster_colors <- unlist(color_tsv_file[1,-1])
+    cluster_colors <- cluster_colors[cluster_names]
+    print(cluster_colors)
+    color_hex_file <- read.delim('condition_colors.tsv',check.names=F)
+    color_hex <- unlist(color_hex_file[1,-1])
+    print(color_hex)
+
+    #get bins for the pseudotime
+    myplotmeta[, ps.bin := ((findInterval(pseudo*b_scale, seq(0, 38, by = binwidth))-1)*binwidth)]
+    #calculate total number of cells per Condition
+    summarycount <- plot.meta[, .N, by = .(geno_treat)]
+    #rename for next step
+    colnames(summarycount)[colnames(summarycount) == "N"] = "N.geno_treat"
+    #get percentage of number of cells across pseudotime
+    meta_bin <- myplotmeta[, .N, by = .(ps.bin, geno_treat)]
+    meta_bin <- merge(x = meta_bin, y = summarycount, by = "geno_treat")
+    meta_bin <- meta_bin[, pct_condition := N/N.geno_treat*100][order(ps.bin)]
+    #xlim <- c(0, ceiling(max(myplotmeta$pseudo)))
+    #xlim <- c(0, 36)
+    xlim <- xlim
+    ylim <- c(0, ceiling(max(meta_bin$pct_condition))+2)
+    mar_offset = c(-1.5, 2.,-3,4)
+    par(mar = c(5.1, 4.1, 6.1, 2.1) + mar_offset)
+    if (!is.null(save_file)){
+        svg(save_file)
+    }
+    pplot <- plot(NULL, xlab = "", ylab = "", xlim = xlim, ylim = ylim, las = 1, yaxt = "n",main = title_name)
+    mtext(bquote(bold(.(y_lab))), side = 2, line = 3, at = floor(max(ylim)/2), cex = 1.2)
+    mtext(bquote(bold(.(x_lab))), side = 1, line = 2.5, cex = 1.2)
+    abline(h=0)
+    #abline(h=seq(0.5, max(ylim), 0.5), col = "lightgrey") #grey lines every 0.5 along the yaxis
+    axis(2, at = seq(0,floor(max(ylim)),by = 1), labels = seq(0,floor(max(ylim)),by = 1), tick = TRUE, las = TRUE)
+    # Plot % cells
+    for (myline in color_names) {
+          meta_bin[geno_treat == myline, points(ps.bin, pct_condition, col = alpha(color_hex[[myline]],alpha_var), pch = 20, cex = 1.5)]
+          meta_bin[geno_treat == myline, lines(spline(ps.bin, pct_condition, method = "n"), col = alpha(color_hex[[myline]],alpha_var), lwd = 2.5)]
+        }
+    #Draw Rug of cell type
+    # done in a way to have the least amount of cells per cluster on top of bigger clusters
+    myplotmeta$cell.ident <- as.factor(myplotmeta$cell.ident)
+    myplotmeta$cell.ident <- droplevels(myplotmeta$cell.ident)
+    for (clustr in rev(names(sort(table(myplotmeta$cell.ident))))){
+        myrugmeta <- myplotmeta[cell.ident  == clustr]
+        #myrugmeta[, points(x=pseudo, y = rep(max(ylim),nrow(myrugmeta)),pch = "|",cex =1,col = cluster_colors[[clustr]])]
+        #myrugmeta[, points(x=pseudo, y = rep(max(ylim),nrow(myrugmeta)),pch = "|",cex =1,col = cluster_colors[[clustr]])]
+        myrugmeta[, points(x=pseudo, y = rep(max(ylim),nrow(myrugmeta)),pch = "|",cex =1,col = alpha(cluster_colors[[clustr]],0.4))]
+    }
+    # Legend for lines & rug
+    pctLegend <- color_names
+    legendcolor <- color_hex[color_names]
+    leg <- legend("topright",inset = c(0.02),horiz = FALSE, legend = pctLegend, col = legendcolor, lwd = 2.5, cex = 1.2, bty = "n", plot = T)
+    pctLegend <- clusters_of_interest
+    legendcolor <- unname(cluster_colors[clusters_of_interest])
+    legend(x = leg$rect$left, y = leg$rect$top - leg$rect$h,horiz = FALSE, legend = pctLegend, col = legendcolor, pch = 15, cex = 1.2, bty = "n", plot = T)
+    if (!is.null(save_file)){
+        dev.off()
+    }
+    else{
+        return(pplot)
+    }
+}
+```
+
+
+
+
+## HSC->preGM->IMP->Gran/Mon Prog
+```{r}
+load_or_install(c("DT","grid","plyr","dplyr","ggplot2","plotly","knitr","future","patchwork","gridExtra","RColorBrewer","data.table","extrafont"))
+plot.meta <- colData(cds)
+plot.meta$pseudo <- pseudotime(cds)
+plot.meta <- as.data.frame(plot.meta)
+plot.meta$cell.ident <- as.factor(plot.meta$cell.ident)
+plot.meta$geno_treat <- as.factor(plot.meta$geno_treat)
+
+plot.meta$geno_treat <-factor(plot.meta$geno_treat, levels = c("WT_unt", "WT_IL1b", "KO_unt", "KO_IL1b" ))
+plot.meta$cell.ident <-factor(plot.meta$cell.ident, levels =c("HSC","preGM","IMP","proNeu","Mono","Mac","Neut","Baso","MegP", "CLP","T-cell","pDc/B-cell","Eo","MEP","CFU-E","EryB_CD45-","EryB_CD45+"))
+plot.meta <- as.data.table(plot.meta)
+plot.meta$cell.ident <- as.character(plot.meta$cell.ident)
+plot.meta
+```
+### Diffusion Plot
+```{r, fig.width=8, fig.height=5}
+clusters_of_interest <- c("HSC","preGM",  "MEP", "CFU-E", "EryB_CD45-")
+plot_pseudotime(plot.meta=plot.meta, pseudotime = 'pseudo',x_lab = "Diffusion Pseudotime",y_lab="% of Total Cells",title_name = "HSC -> Prog-> MEP -> CFU-E -> EryB" ,clusters_of_interest = clusters_of_interest,color_hex = NULL,cluster_colors = NULL,b_scale = 1,binwidth = 1, alpha_var = 1)#,  save_file="/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC-GMprog-MEP-EryB_Diffusion.svg")
+
+
+```
+### Jitter Plot by condition
+```{r, fig.width=8, fig.height=3}
+
+color_tsv_file <- read.delim('cluster_colors.tsv',check.names=F)
+cluster_colors <- unlist(color_tsv_file[1,-1])
+
+
+
+
+p7<-ggplot(plot.meta[plot.meta$cell.ident %in% clusters_of_interest,], aes(x=geno_treat, y = pseudo, color = cell.ident)) +
+  geom_jitter(position = position_jitter(width = 0.45), size = 0.1) +
+  coord_flip() + 
+  scale_color_manual(values = cluster_colors[names(cluster_colors) %in% clusters_of_interest], guide = guide_legend(override.aes = list(size = 5))) + 
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "transparent"), # Set background color to transparent
+        panel.grid.major = element_blank(),                  # Remove major grid lines
+        panel.grid.minor = element_blank(),                  # Remove minor grid lines
+        panel.border = element_blank(),                      # Remove plot border
+        axis.line = element_blank()) +
+  ylim(0,36)+
+  labs(title = "Box Plot of Pseudotime by cell type and condition",
+       x = "geno_treat",
+       y = "pseudo",
+       color = "cell.ident")
+
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC_preGM_IMP_Neut_jitter_by_GenoTreat.svg", plot = p7, device = "svg", width = 6, height = 3, units = "in")
+p7
+
+```
+
+### Jitter Plot combined
+```{r, fig.width=12, fig.height=1.5}
+p7.1 <- ggplot(plot.meta[plot.meta$cell.ident %in% clusters_of_interest,], aes(x=1, y = pseudo, color = cell.ident)) +
+  geom_jitter(position = position_jitter(width = 0.45), size = 0.1) +
+  coord_flip() + 
+  scale_color_manual(values = cluster_colors[names(cluster_colors) %in% clusters_of_interest], guide = guide_legend(override.aes = list(size = 5))) + 
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "transparent"), # Set background color to transparent
+        panel.grid.major = element_blank(),                  # Remove major grid lines
+        panel.grid.minor = element_blank(),                  # Remove minor grid lines
+        panel.border = element_blank(),                      # Remove plot border
+        axis.line = element_blank()) +
+  ylim(0,36)+
+  labs(title = "Box Plot of Pseudotime by cell type and condition",
+       x = "geno_treat",
+       y = "pseudo",
+       color = "cell.ident")
+
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC_preGM_IMP_GranulProg_jitter.svg", plot = p7.1, device = "svg", width = 12, height = 1.5, units = "in")
+p7.1
+```
+
+```{r, fig.width=8, fig.height=5}
+clusters_of_interest <- c("HSC","preGM",  "IMP", "proNeu")
+plot_pseudotime(plot.meta=plot.meta, pseudotime = 'pseudo',x_lab = "Diffusion Pseudotime",y_lab="% of Total Cells",title_name = "HSC -> GM prog-> IMP -> Gran/Mono Prog" ,clusters_of_interest = clusters_of_interest,color_hex = NULL,cluster_colors = NULL,b_scale = 1,binwidth = 1, alpha_var = 1)#,save_file="/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC-GMprog-IMP-GranMonoProg_Diffusion.svg")
+
+
+```
+
+### Jitter Plot by condition
+```{r, fig.width=8, fig.height=3}
+
+color_tsv_file <- read.delim('cluster_colors.tsv',check.names=F)
+cluster_colors <- unlist(color_tsv_file[1,-1])
+
+
+
+
+p8<-ggplot(plot.meta[plot.meta$cell.ident %in% clusters_of_interest,], aes(x=geno_treat, y = pseudo, color = cell.ident)) +
+  geom_jitter(position = position_jitter(width = 0.45), size = 0.1) +
+  coord_flip() + 
+  scale_color_manual(values = cluster_colors[names(cluster_colors) %in% clusters_of_interest], guide = guide_legend(override.aes = list(size = 5))) + 
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "transparent"), # Set background color to transparent
+        panel.grid.major = element_blank(),                  # Remove major grid lines
+        panel.grid.minor = element_blank(),                  # Remove minor grid lines
+        panel.border = element_blank(),                      # Remove plot border
+        axis.line = element_blank()) +
+  ylim(0,36)+
+  labs(title = "Box Plot of Pseudotime by cell type and condition",
+       x = "geno_treat",
+       y = "pseudo",
+       color = "cell.ident")
+
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC_preGM_IMP_Neut_jitter_by_GenoTreat.svg", plot = p7, device = "svg", width = 6, height = 3, units = "in")
+p8
+
+```
+### Jitter Plot combined
+```{r, fig.width=12, fig.height=1.5}
+p8.1 <- ggplot(plot.meta[plot.meta$cell.ident %in% clusters_of_interest,], aes(x=1, y = pseudo, color = cell.ident)) +
+  geom_jitter(position = position_jitter(width = 0.45), size = 0.1) +
+  coord_flip() + 
+  scale_color_manual(values = cluster_colors[names(cluster_colors) %in% clusters_of_interest], guide = guide_legend(override.aes = list(size = 5))) + 
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "transparent"), # Set background color to transparent
+        panel.grid.major = element_blank(),                  # Remove major grid lines
+        panel.grid.minor = element_blank(),                  # Remove minor grid lines
+        panel.border = element_blank(),                      # Remove plot border
+        axis.line = element_blank()) +
+  ylim(0,36)+
+  labs(title = "Box Plot of Pseudotime by cell type and condition",
+       x = "geno_treat",
+       y = "pseudo",
+       color = "cell.ident")
+
+ggsave(filename = "/Users/r.strogantsev/Documents/Tet2_IL1b/sc10x_Tidy/Seurat_Final/Monocle3/Version_3/HSC_preGM_IMP_GranulProg_jitter.svg", plot = p8.1, device = "svg", width = 12, height = 1.5, units = "in")
+p8.1
+```
+
+### Diffusion Plot
+```{r, fig.width=8, fig.height=5}
+clusters_of_interest <- c("HSC","CLP")
+plot_pseudotime(plot.meta=plot.meta, pseudotime = 'pseudo',x_lab = "Diffusion Pseudotime",y_lab="% of Total Cells",title_name = "HSC -> CLP" ,clusters_of_interest = clusters_of_interest,color_hex = NULL,cluster_colors = NULL,b_scale = 1,binwidth = 1, alpha_var = 1, xlim=c(0,10)) #save_file="HSC-GMprog-IMP-GranMonoProg_Diffusion.svg")
+
+
+```
+
+```{r, fig.width=8, fig.height=3}
+
+color_tsv_file <- read.delim('cluster_colors.tsv',check.names=F)
+cluster_colors <- unlist(color_tsv_file[1,-1])
+
+
+
+
+p9<-ggplot(plot.meta[plot.meta$cell.ident %in% clusters_of_interest,], aes(x=geno_treat, y = pseudo, color = cell.ident)) +
+  geom_jitter(position = position_jitter(width = 0.45), size = 0.1) +
+  coord_flip() + 
+  scale_color_manual(values = cluster_colors[names(cluster_colors) %in% clusters_of_interest], guide = guide_legend(override.aes = list(size = 5))) + 
+  theme_minimal() +
+  theme(panel.background = element_rect(fill = "transparent"), # Set background color to transparent
+        panel.grid.major = element_blank(),                  # Remove major grid lines
+        panel.grid.minor = element_blank(),                  # Remove minor grid lines
+        panel.border = element_blank(),                      # Remove plot border
+        axis.line = element_blank()) +
+  ylim(0,10)+
+  labs(title = "Box Plot of Pseudotime by cell type and condition",
+       x = "geno_treat",
+       y = "pseudo",
+       color = "cell.ident")
+
+#ggsave(filename = "HSC_preGM_IMP_Neut_jitter_by_GenoTreat.svg", plot = p7, device = "svg", width = 6, height = 3, units = "in")
+p9
+```
+
+
+
+# Gene Expression Changes across genotype & Treatment
+
+
+
+## Dot Plot
+
+```{r, fig.width=15, fig.height=20}
+#load from file if returning to the script
+#int.cluster.markers <- read_csv("integrated-cluster-gene-markers.csv", col_names = T)
+
+
+Idents(marrow.filt.integrated) <- "cell.ident"
+DefaultAssay(marrow.filt.integrated) <- "RNA"
+marrow.int.subpops<- subset(marrow.filt.integrated, idents = c("HSC","preGM","IMP","proNeu","Mono","Mac","Baso","Neut","Eo","MegP","MEP","CFU-E","EryB_CD45-", "CLP","pDc/B-cell","T-cell"))
+
+
+
+
+my_levels <- c("HSC","preGM","IMP","proNeu","Mono","Mac","Baso","Neut","Eo","MegP","MEP","CFU-E","EryB_CD45-", "CLP","pDc/B-cell","T-cell")
+
+Idents(marrow.int.subpops) <- factor(Idents(marrow.int.subpops), levels= rev(my_levels))
+#Select genes to plot
+
+
+markers.to.plot<- c("Flt3","Ctla2a",  "Meis1", "Cd34",  "Sox4", "Fcgr3",  "Elane", "Mpo", "Ly6c2", "Gfi1", "Irf8", "Ly86","S100a4",    "Gata2", "Cd200r3", "Fcer1a", "S100a8","Mmp8", "Retnlg",   "Prg2", "Cebpe",  "Pf4", "Pbx1", "Gypa", "Klf1", "Gata1",  "Hbb-bs",  "Dntt", "Ebf1", "Il17r", "Cd74", "Mzb1", "Ccl5", "Klrk1")
+
+#pdf(file="DotPlot_man_pick_genes.pdf", width=10, height=12)
+require(cowplot)
+DotPlot(marrow.int.subpops, features = markers.to.plot, cols=c("blue", "blue", "red2", "red2"), dot.scale = 5, split.by = "geno_treat") +RotatedAxis()+FontSize(x.title = 10, y.title = 10, main = 16, x.text = 8, y.text=8)
+#dev.off()
+
+```
+
+## Cell type abundance per genotype & treatment
+
+```{r}
+
+cluster.props <- prop.table(table(Idents(marrow.filt.integrated), marrow.filt.integrated$geno_treat), margin=2) 
+cluster.props <- as.data.frame.matrix(cluster.props, row.names = dimnames(cluster.props)[[1]])
+
+cluster.props<-cluster.props %>% 
+  as_tibble(rownames = "cluster_ID") %>%
+  gather(key="geno_treat", value="proportion", -cluster_ID)%>%
+  mutate(cluster_ID = as_factor(cluster_ID), geno_treat=as_factor(geno_treat)) %>%
+  mutate_at(vars(proportion), round, 3)
+
+
+cluster.props$geno_treat <- factor(cluster.props$geno_treat, levels = rev(levels(cluster.props$geno_treat)))
+#Re-order cell identities
+cluster.props$cluster_ID <- factor(cluster.props$cluster_ID, levels=c("HSC","preGM","IMP","proNeu","Mono","Mac","Neut","Baso","MegP", "CLP","T-cell","pDc/B-cell","Eo","MEP","CFU-E","EryB_CD45-","EryB_CD45+"))
+```
+
+## Barplot cell type changes (overall)
+
+```{r cluster proportions, fig.height=6, fig.width=8}
+cluster.props.barplot <- ggplot(data=cluster.props, mapping=aes(x=geno_treat, y=proportion, fill=cluster_ID))+
+  geom_bar(stat='identity', colour="grey40")+
+  coord_flip()+
+  labs(
+    title = "Cluster Proportion Changes",
+    x="Sample_ID",
+    y="Cell Type Proportion"
+  )+
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust=0.5),
+    plot.margin=unit(c(1,1,1.5,1.2),"cm"),
+    legend.position = "right",
+    legend.key.size=unit(8, "mm"),
+    axis.text.x =element_text(angle = 0, margin=margin(t=0.25, unit="cm"), face="bold",size=10),
+    axis.title.x = element_text(margin=margin(t=0.5, unit="cm"), face="bold", size=10),
+    axis.title.y = element_text(margin=margin(t=0.5, unit="cm"), face="bold", size=10))
+
+cluster.props.barplot +scale_fill_manual(values=c("#F8766D","#E88526",  "#AE87FF", "#93AA00", "#D39200","#5EB300", "#00BA38", "#00BF74", "#B79F00","#00C19F", "#00BFC4",  "#00ADFA", "#619CFF", "#FF699C","#DB72FB", "#F564E3", "#FF61C3"))
+
+```
+
+## Replicate Analysis
+
+Now let's examine how individual replicate samples are looking and spot any problems
+
+```{r, fig.width=12, fig.height=12}
+Idents(marrow.filt.integrated)<-"replicate.ID"
+
+marrow.int.singlets<- subset(marrow.filt.integrated, idents = c("Doublet", "Negative"), invert=TRUE)
+
+levels(marrow.int.singlets$replicate.ID) #Doublet and Singlet still present
+marrow.int.singlets[["replicate.ID"]]<- Idents(marrow.int.singlets) #drops the levels for doublets and singlets
+
+#pdf(file="UMAP_Individ_replicates.pdf", width=12, height=12)
+DimPlot(marrow.int.singlets, reduction = "umap", label = F, pt.size = 0.4, group.by= "cell.ident", split.by = "replicate.ID", ncol=4,cols=c( "#F8766D","#E88526",  "#AE87FF", "#93AA00", "#D39200","#5EB300", "#00BA38", "#00BF74", "#B79F00","#00C19F", "#00BFC4",  "#00ADFA", "#619CFF", "#FF699C","#DB72FB", "#F564E3", "#FF61C3")) 
+#dev.off()
+```
+
+```{r}
+options(width = 70)
+cell.no.table<- table(marrow.int.singlets$replicate.ID, marrow.int.singlets$cell.ident)
+cell.no.table<-as.data.frame(cell.no.table)
+colnames(cell.no.table) <- c("Condition", "cell type", "Number of cells")
+write_csv(cell.no.table, "./cell_types_condition.csv", col_names = TRUE)
+
+cell.no.table
+
+```
+
+"WT_unt_rep2", "WT_stm_rep4", "KO_unt_rep2", "KO_stm_rep1", each have substantially fewer cells than other 3 replicates and may not be accurate for using in downstream differential expression quantification,
+
+Let's plot cell type proportions in each dataset
+
+```{r, fig.width=8, fig.height=8}
+Idents(marrow.int.singlets) <- "cell.ident"
+cluster.prop.reps <- prop.table(table(Idents(marrow.int.singlets), marrow.int.singlets$replicate.ID), margin=2) 
+cluster.prop.reps <- as.data.frame.matrix(cluster.prop.reps, row.names = dimnames(cluster.prop.reps)[[1]])
+
+
+cluster.prop.reps<-cluster.prop.reps %>% 
+  as_tibble(rownames = "cluster_ID") %>%
+  gather(key="replicate.ID", value="proportion", -cluster_ID)%>%
+  mutate(cluster_ID = as_factor(cluster_ID), replicate.ID=as_factor(replicate.ID)) %>%
+  mutate_at(vars(proportion), round, 3)
+
+
+cluster.prop.reps$replicate.ID <- factor(cluster.prop.reps$replicate.ID, levels = rev(levels(cluster.prop.reps$replicate.ID)))
+#Re-order cell identities
+#cluster.prop.reps$cluster_ID <- factor(cluster.prop.reps$cluster_ID, levels =c("HSC","preGM","IMP","proNeu","Mono","Mac","Neut","Baso","MegP","MEP","CFU-E","EryB_CD45-","EryB_CD45+", "CLP","T-cell","pDc/B-cell","Eo"))
+  
+ 
+cluster.prop.reps<-cluster.prop.reps %>% 
+  filter(replicate.ID!="WT_unt_rep2" & replicate.ID!="WT_stm_rep4" & replicate.ID!="KO_unt_rep2" & replicate.ID!="KO_stm_rep1" )
+
+
+cluster.prop.reps<-cluster.prop.reps %>% mutate(replicate.ID=as.character(replicate.ID))%>%  mutate(Treat=as.factor(str_trunc(replicate.ID, 6, side='right', ellipsis="")))
+  
+cluster.prop.reps %>% filter(cluster_ID=='HSC')%>%
+  group_by(Treat)%>% summarise(avg=mean(proportion))
+  
+HSC.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='HSC')
+preGM.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='preGM')
+IMP.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='IMP')
+proNeu.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='proNeu')
+Mono.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='Mono')
+Neut.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='Neut')
+Baso.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='Baso')
+MEP.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='MEP')
+CLP.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='CLP')
+MegP.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='MegP')
+CFUE.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='CFU-E')
+EryB.rel.prop<-cluster.prop.reps %>% filter(cluster_ID=='EryB_CD45-')
+
+
+
+require(dunn.test)
+dunn.test(HSC.rel.prop$proportion, HSC.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(preGM.rel.prop$proportion, preGM.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(IMP.rel.prop$proportion, IMP.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(proNeu.rel.prop$proportion, proNeu.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(Mono.rel.prop$proportion, Mono.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(Neut.rel.prop$proportion, Neut.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(Baso.rel.prop$proportion, Baso.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(MEP.rel.prop$proportion, MEP.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(CLP.rel.prop$proportion, CLP.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(MegP.rel.prop$proportion, MegP.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(CFUE.rel.prop$proportion, CFUE.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+dunn.test(EryB.rel.prop$proportion, EryB.rel.prop$Treat, kw=T, method="bonferroni", alpha=0.05)
+  
+```
+
+```{r}
+IMP.rel.prop$proportion*100
+
+```
+
+```{r}
+cluster.prop_reps.bp <- ggplot(data=cluster.prop.reps, mapping=aes(x=replicate.ID, y=proportion, fill=cluster_ID))+
+  geom_bar(stat='identity', colour="grey40")+
+  coord_flip()+
+  scale_fill_manual(values=c("#F8766D","#E88526",  "#AE87FF", "#93AA00", "#D39200","#5EB300", "#00BA38", "#00BF74", "#B79F00","#00C19F", "#00BFC4",  "#00ADFA", "#619CFF", "#FF699C","#DB72FB", "#F564E3", "#FF61C3"))+
+  labs(
+    title = "Cluster Proportion Changes",
+    x="Sample_ID",
+    y="Cell Type Proportion"
+  )+
+  theme_bw()+
+  theme(
+    plot.title = element_text(hjust=0.5),
+    plot.margin=unit(c(1,1,1.5,1.2),"cm"),
+    legend.position = "right",
+    legend.key.size=unit(4, "mm"),
+    axis.text.x =element_text(angle = 0, margin=margin(t=0.25, unit="cm")),
+    axis.title.x = element_text(margin=margin(t=0.5, unit="cm"), face="bold")
+  )
+
+```
+
+## Barplot cell type changes (per replicate)
+
+```{r, fig.width=12, fig.height=6}
+#pdf(file="BarPlot_ClusterProp_replicates.pdf", width=12, height=6)
+cluster.prop_reps.bp
+#dev.off()
+```
+
+```{r}
+#Calculate % distribution of each cluster within each replicate
+Idents(marrow.int.singlets) <- "cell.ident"
+options(width = 110)
+round(prop.table(table(Idents(marrow.int.singlets), marrow.int.singlets$replicate.ID), margin=2), digits=3)*100
+```
+
+```{r}
+options(width = 110)
+table(Idents(marrow.int.singlets), marrow.int.singlets$replicate.ID)
+
+```
+
+# Session Info
+
+
+```{r}
+save.image(file="Integrated_2023-02-12.RData")
+sessionInfo()
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
